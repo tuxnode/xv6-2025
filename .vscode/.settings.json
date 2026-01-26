@@ -1,0 +1,4 @@
+{
+  "C_Cpp.default.compilerPath": "/opt/homebrew/bin/riscv64-unknown-elf-gcc",
+  "C_Cpp.default.cStandard": "gnu11"
+}
