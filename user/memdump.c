@@ -61,5 +61,46 @@ void
 memdump(char *fmt, char *data)
 {
   // Your code here.
+  char *p = fmt;
+  char *d = data; // 使用临时指针操作数据
 
+  while (*p) {
+    char f = *p;
+    
+    if (f == 'i') {
+      // 32位整数
+      int val = *(int *)d;
+      printf("%d\n", val);
+      d += 4;
+    } 
+    else if (f == 'p') {
+      // 64位十六进制
+      uint64 val = *(uint64 *)d;
+      printf("%x\n", (uint)val);
+      d += 8;
+    } 
+    else if (f == 'h') {
+      // 16位整数
+      short val = *(short *)d;
+      printf("%d\n", val);
+      d += 2;
+    } 
+    else if (f == 'c') {
+      printf("%c\n", *d);
+      d += 1;
+    } 
+    else if (f == 's') {
+      // 指向字符串的指针
+      char *str_ptr = *(char **)d;
+      printf("%s\n", str_ptr);
+      d += 8;
+    } 
+    else if (f == 'S') {
+      // 剩余数据本身就是字符串
+      printf("%s\n", d);
+      return;
+    }
+    // 移动到下一个数据块
+    p++; 
+  } 
 }
