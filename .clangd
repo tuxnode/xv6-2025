@@ -1,0 +1,24 @@
+CompileFlags:
+  # 这一部分针对所有文件，首先尝试把报错的参数干掉
+  Remove: 
+    - -mcmodel=medany
+    - -mno-relax
+    - -fno-stack-protector
+  Add: 
+    - "-target"
+    - "riscv64-unknown-elf"
+    - "-D__riscv_xlen=64"
+    - "-Wno-unknown-attributes"
+
+---
+# 针对宿主机工具 (mkfs.c) 的特殊配置
+If:
+  PathMatch: mkfs/.*
+CompileFlags:
+  # 移除上面全局添加的 riscv 目标，换回 Mac 原生目标
+  Remove: 
+    - "-target"
+    - "riscv64-unknown-elf"
+  Add: 
+    - "-target"
+    - "arm64-apple-macosx"
