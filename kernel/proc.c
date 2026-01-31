@@ -125,6 +125,9 @@ found:
   p->pid = allocpid();
   p->state = USED;
 
+  p->sandbox_mask = 0;
+  memset(p->allow_path, 0, MAXPATH);
+
   // Allocate a trapframe page.
   if((p->trapframe = (struct trapframe *)kalloc()) == 0){
     freeproc(p);
@@ -278,6 +281,10 @@ kfork(void)
 
   // Cause fork to return 0 in the child.
   np->trapframe->a0 = 0;
+
+  // 复制沙箱信息
+  np->sandbox_mask = p->sandbox_mask;
+  safestrcpy(np->allow_path, p->allow_path, MAXPATH);
 
   // increment reference counts on open file descriptors.
   for(i = 0; i < NOFILE; i++)
