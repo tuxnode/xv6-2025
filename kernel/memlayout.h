@@ -45,6 +45,8 @@
 
 // map the trampoline page to the highest address,
 // in both user and kernel space.
+// 定义了虚拟地址的最高地址，是内核态和用户态的交接地
+// 存放的是执行上下文切换的汇编代码
 #define TRAMPOLINE (MAXVA - PGSIZE)
 
 // map kernel stacks beneath the trampoline,
@@ -61,6 +63,7 @@
 //   USYSCALL (shared with kernel)
 //   TRAPFRAME (p->trapframe, used by the trampoline)
 //   TRAMPOLINE (the same page as in the kernel)
+// 这个地址存储上下文切换保存的寄存器信息
 #define TRAPFRAME (TRAMPOLINE - PGSIZE)
 #ifdef LAB_PGTBL
 #define USYSCALL (TRAPFRAME - PGSIZE)

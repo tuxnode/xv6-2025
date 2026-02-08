@@ -29,6 +29,7 @@ uservec:
 
         # save user a0 in sscratch so
         # a0 can be used to get at TRAPFRAME.
+        # 将a0当做基准寄存器，其原本的值被特殊存储起来
         csrw sscratch, a0
 
         # each process has a separate p->trapframe memory area,

@@ -92,6 +92,7 @@ kvminithart()
 //   21..29 -- 9 bits of level-1 index.
 //   12..20 -- 9 bits of level-0 index.
 //    0..11 -- 12 bits of byte offset within the page.
+//    pagetable存储着物理页的基准地址
 pte_t *
 walk(pagetable_t pagetable, uint64 va, int alloc)
 {
@@ -99,9 +100,9 @@ walk(pagetable_t pagetable, uint64 va, int alloc)
     panic("walk");
 
   for(int level = 2; level > 0; level--) {
-    pte_t *pte = &pagetable[PX(level, va)];
+    pte_t *pte = &pagetable[PX(level, va)]; // 定位PTE
     if(*pte & PTE_V) {
-      pagetable = (pagetable_t)PTE2PA(*pte);
+      pagetable = (pagetable_t)PTE2PA(*pte); // 将PTE中指向下一级页表的地址转化为基地址
 #ifdef LAB_PGTBL
       if(PTE_LEAF(*pte)) {
         return pte;
