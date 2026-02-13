@@ -149,3 +149,25 @@ printfinit(void)
 {
   initlock(&pr.lock, "pr");
 }
+
+void 
+backtrace(void)
+{
+  // 获取stack frame pointer
+  uint64 fp = r_fp();
+  uint64 ra;
+
+  printf("backtrace:\n");
+
+  for (;;) {
+    // 获取返回地址
+    ra = *(uint64 *)(fp - 8);
+    printf("0x%lx\n", ra);
+
+    // 获取旧函数的栈帧
+    fp = *(uint64 *)(fp - 16);
+
+    // 检查是否到栈底
+    if (PGROUNDDOWN(fp) == fp) break;
+  }
+}
