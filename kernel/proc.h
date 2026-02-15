@@ -104,4 +104,13 @@ struct proc {
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
+  
+  // Lab alarm
+  int alarm_interval;          // 闹钟触发间隔的tick数
+  uint64 alarm_handler;        // 闹钟处理函数的地址
+  int alarm_ticks;             // 记录距离上次发生了多少个tick
+
+  struct trapframe *alarm_save;// 存储寄存器信息
+
+  int is_alarm_handling;       // 记录闹钟状态：1表示正在处理，否则是0
 };

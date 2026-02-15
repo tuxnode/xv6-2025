@@ -108,3 +108,33 @@ sys_uptime(void)
   release(&tickslock);
   return xticks;
 }
+
+uint64
+sys_sigalarm(void)
+{
+  int n;
+  uint64 fn;
+  struct proc *p = myproc();
+
+  argint(0, &n);
+  argaddr(1, &fn);
+
+  p->alarm_interval = n;
+  p->alarm_handler = fn;
+  p->alarm_ticks = 0;
+
+  return 0;
+}
+
+uint64
+sys_sigreturn(void)
+{
+  struct proc *p = myproc();
+
+  // 转移寄存器中的数值
+  memmove(p->trapframe, p->alarm_save, sizeof(struct trapframe));
+
+  p->is_alarm_handling = 0;
+
+  return p->trapframe->a0;
+}

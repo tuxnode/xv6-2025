@@ -81,8 +81,23 @@ usertrap(void)
     kexit(-1);
 
   // give up the CPU if this is a timer interrupt.
-  if(which_dev == 2)
+  if(which_dev == 2) {
+    // 检查用户是否开启闹钟
+    if (p->alarm_interval > 0) {
+      p->alarm_ticks++;
+      if (p->alarm_ticks == p->alarm_interval && p->is_alarm_handling == 0) {
+        // 转交寄存器信息
+        memmove(p->alarm_save, p->trapframe, sizeof(struct trapframe));
+
+        p->trapframe->epc = p->alarm_handler;
+        // 给闹钟状态上锁
+        p->is_alarm_handling = 1;
+
+        p->alarm_ticks = 0; // 重置计数器
+      }
+    }
     yield();
+  }
 
   prepare_return();
 
