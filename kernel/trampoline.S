@@ -35,8 +35,12 @@ uservec:
         # but it's mapped to the same virtual address
         # (TRAPFRAME) in every process's user page table.
         li a0, TRAPFRAME
+
+        csrr t0, sepc
         
         # save the user registers in TRAPFRAME
+        sd t0, 24(a0)
+
         sd ra, 40(a0)
         sd sp, 48(a0)
         sd gp, 56(a0)
