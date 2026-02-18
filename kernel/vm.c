@@ -222,14 +222,17 @@ uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz, int xperm)
   if(newsz < oldsz)
     return oldsz;
 
+  // 对原进程大小以最小页大小为单位，取值
   oldsz = PGROUNDUP(oldsz);
+  // 按页分配新空间的内存
   for(a = oldsz; a < newsz; a += PGSIZE){
     mem = kalloc();
     if(mem == 0){
       uvmdealloc(pagetable, a, oldsz);
       return 0;
     }
-    memset(mem, 0, PGSIZE);
+    memset(mem, 0, PGSIZE); // 清空新申请的物理内存
+    // 设置映射
     if(mappages(pagetable, a, PGSIZE, (uint64)mem, PTE_R|PTE_U|xperm) != 0){
       kfree(mem);
       uvmdealloc(pagetable, a, oldsz);
@@ -246,6 +249,7 @@ uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz, int xperm)
 uint64
 uvmdealloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
 {
+  // 判断错误情况
   if(newsz >= oldsz)
     return oldsz;
 
@@ -455,6 +459,7 @@ vmfault(pagetable_t pagetable, uint64 va, int read)
   uint64 mem;
   struct proc *p = myproc();
 
+  // 如果异常地址超过了sz(heap)的限制
   if (va >= p->sz)
     return 0;
   va = PGROUNDDOWN(va);
@@ -462,8 +467,10 @@ vmfault(pagetable_t pagetable, uint64 va, int read)
     return 0;
   }
   mem = (uint64) kalloc();
-  if(mem == 0)
+  if(mem == 0) {
+    p->killed = 1;
     return 0;
+  }
   memset((void *) mem, 0, PGSIZE);
   if (mappages(p->pagetable, va, PGSIZE, mem, PTE_W|PTE_U|PTE_R) != 0) {
     kfree((void *)mem);

@@ -81,6 +81,7 @@ struct trapframe {
 
 enum procstate { UNUSED, USED, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
 
+// xv6中栈只分配了单独一个Page，所以p->sz足够清晰表达堆的增长
 // Per-process state
 struct proc {
   struct spinlock lock;

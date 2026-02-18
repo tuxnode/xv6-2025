@@ -47,6 +47,7 @@ sys_sbrk(void)
   argint(1, &t);
   addr = myproc()->sz;
 
+  // 判断是否需要立即写入
   if(t == SBRK_EAGER || n < 0) {
     if(growproc(n) < 0) {
       return -1;
