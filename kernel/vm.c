@@ -7,6 +7,7 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "fs.h"
+#include <stdatomic.h>
 
 /*
  * the kernel's page table.
@@ -299,22 +300,42 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   pte_t *pte;
   uint64 pa, i;
   uint flags;
-  char *mem;
+  // char *mem;
+
+  // for(i = 0; i < sz; i += PGSIZE){
+  //   if((pte = walk(old, i, 0)) == 0)
+  //     continue;   // page table entry hasn't been allocated
+  //   if((*pte & PTE_V) == 0)
+  //     continue;   // physical page hasn't been allocated
+  //   pa = PTE2PA(*pte);
+  //   flags = PTE_FLAGS(*pte);
+  //   if((mem = kalloc()) == 0)
+  //     goto err;
+  //   memmove(mem, (char*)pa, PGSIZE);
+  //   if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
+  //     kfree(mem);
+  //     goto err;
+  //   }
+  // }
 
   for(i = 0; i < sz; i += PGSIZE){
-    if((pte = walk(old, i, 0)) == 0)
-      continue;   // page table entry hasn't been allocated
-    if((*pte & PTE_V) == 0)
-      continue;   // physical page hasn't been allocated
-    pa = PTE2PA(*pte);
-    flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
-      goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
-      goto err;
+    // walk返回的是pte地址，返回0代表不存在
+    if ((pte = walk(old, i, 0)) == 0) continue;     
+    // 如果没有有效位，跳过
+    if ((*pte & PTE_V) == 0) continue;
+
+    pa = PTE2PA(*pte); // 取出物理地址
+
+    if (*pte & PTE_W){
+      *pte &= ~PTE_W; // 禁止写入
+      *pte |= PTE_COW;
     }
+
+    incr_ref((void *)pa);
+    
+    flags = PTE_FLAGS(*pte);
+
+    if (mappages(new, i, PGSIZE, pa, flags) != 0) goto err;
   }
   return 0;
 
@@ -349,18 +370,23 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
     va0 = PGROUNDDOWN(dstva);
     if(va0 >= MAXVA)
       return -1;
-  
-    pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0) {
-      if((pa0 = vmfault(pagetable, va0, 0)) == 0) {
-        return -1;
-      }
-    }
 
     pte = walk(pagetable, va0, 0);
+    if(pte == 0 || !(*pte & PTE_V) || !(*pte & PTE_W)){
+      if(vmfault(pagetable, va0, 0) == 0) return -1;
+
+      pa0 = walkaddr(pagetable, va0);
+    }else{
+      pa0 = PTE2PA(*pte);
+    }
+  
+    if(pa0 == 0) {
+        return -1;
+    }
+
     // forbid copyout over read-only user text pages.
-    if((*pte & PTE_W) == 0)
-      return -1;
+    // if((*pte & PTE_W) == 0)
+    //   return -1;
       
     n = PGSIZE - (dstva - va0);
     if(n > len)
@@ -452,15 +478,24 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
 uint64
 vmfault(pagetable_t pagetable, uint64 va, int read)
 {
-  uint64 mem;
+  pte_t *pte;
+  uint64 mem, pa;
+  uint flags;
   struct proc *p = myproc();
 
   if (va >= p->sz)
     return 0;
+
   va = PGROUNDDOWN(va);
-  if(ismapped(pagetable, va)) {
-    return 0;
+  
+  pte = walk(pagetable, va, 0);
+  if(pte != 0 && (*pte & PTE_V) && (*pte & PTE_COW)) {
+    goto cow;
   }
+
+  // if(ismapped(pagetable, va)) {
+  //   return 0;
+  // }
   mem = (uint64) kalloc();
   if(mem == 0)
     return 0;
@@ -469,6 +504,33 @@ vmfault(pagetable_t pagetable, uint64 va, int read)
     kfree((void *)mem);
     return 0;
   }
+  return mem;
+
+cow:
+  pa = PTE2PA(*pte);
+
+  // 仅有一个进程，则恢复权限
+  if(get_count((void *)pa) == 0){
+    *pte |= PTE_W;
+    *pte &= ~PTE_COW;
+  }
+
+  if((mem = (uint64)kalloc()) == 0) return 0;
+
+  // 将物理页拷贝
+  memmove((void *)mem, (void *)pa, PGSIZE);
+
+  // 设置可读写权限
+  flags = (PTE_FLAGS(*pte) | PTE_W) & ~PTE_COW;
+
+  uvmunmap(pagetable, va, 1, 0);
+  if(mappages(pagetable, va, PGSIZE, mem, flags) != 0) {
+    kfree((void *)mem);
+    return 0;
+  }
+  
+  kfree((void *)pa);
+
   return mem;
 }
 
