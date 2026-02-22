@@ -19,6 +19,8 @@ static uint8 host_mac[ETHADDR_LEN] = { 0x52, 0x55, 0x0a, 0x00, 0x02, 0x02 };
 
 static struct spinlock netlock;
 
+extern int e1000_transmit(char *buf, int len);
+
 void
 netinit(void)
 {

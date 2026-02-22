@@ -17,7 +17,7 @@ static struct rx_desc rx_ring[RX_RING_SIZE] __attribute__((aligned(16)));
 // remember where the e1000's registers live.
 static volatile uint32 *regs;
 
-// 记录缓冲区指针
+// 记录缓冲区指针，软件层面维护，存储虚拟地址
 static char *tx_membuf[TX_RING_SIZE];
 static char *rx_membuf[RX_RING_SIZE];
 
@@ -139,16 +139,19 @@ e1000_transmit(char *buf, int len)
 static void
 e1000_recv(void)
 {
-  // Check for packets that have arrived from the e1000
-  // Create and deliver a buf for each packet (using net_rx()).
+  /*
+  外部维护一个rdt_check记录处理rx_ring的进度
+  并且使用rx_membuf指针数组来持久化存储指针，存储虚拟地址
+  */
   acquire(&e1000_lock);
   
-  // 遍历rx_ring
-  while(rx_ring[rdt_check].status & E1000_RXD_STAT_DD){
-    // 将其中的内存交给net_rx管理
-    char *buf = rx_membuf[rdt_check];
+  // 遍历rx_ring，并且检查状态
+  for(;rx_ring[rdt_check].status & E1000_RXD_STAT_DD; rdt_check = (rdt_check + 1) % RX_RING_SIZE){
+    // 将硬件写入rx_ring的数据提取出来
+    char *buf = rx_membuf[rdt_check]; // 这里的地址在init时候确定
     int len = rx_ring[rdt_check].length;
 
+    // 把指针交给net_rx维护
     release(&e1000_lock);
     net_rx(buf, len);
     acquire(&e1000_lock);
@@ -157,13 +160,12 @@ e1000_recv(void)
     char *new_buf = kalloc();
     if(!new_buf) panic("e1000_recv: kalloc failed");
 
+    // 补充空白的内存数组
     rx_membuf[rdt_check] = new_buf;
     rx_ring[rdt_check].addr = (uint64) new_buf;
     rx_ring[rdt_check].status = 0;
 
     regs[E1000_RDT] = rdt_check;
-
-    rdt_check = (rdt_check + 1) % RX_RING_SIZE;
   }
   release(&e1000_lock);
 }
