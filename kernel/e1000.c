@@ -6,6 +6,7 @@
 #include "proc.h"
 #include "defs.h"
 #include "e1000_dev.h"
+#include "net.h"
 
 #define TX_RING_SIZE 16
 static struct tx_desc tx_ring[TX_RING_SIZE] __attribute__((aligned(16)));
@@ -16,8 +17,17 @@ static struct rx_desc rx_ring[RX_RING_SIZE] __attribute__((aligned(16)));
 // remember where the e1000's registers live.
 static volatile uint32 *regs;
 
+// 记录缓冲区指针
+static char *tx_membuf[TX_RING_SIZE];
+static char *rx_membuf[RX_RING_SIZE];
+
 struct spinlock e1000_lock;
 
+// 外部声明
+extern struct membuf *mbuf_alloc(void);
+extern void net_rx(char *buf, int len);
+
+static uint32 rdt_check = 0;
 // called by pci_init().
 // xregs is the memory address at which the
 // e1000's registers are mapped.
@@ -53,9 +63,10 @@ e1000_init(uint32 *xregs)
   // [E1000 14.4] Receive initialization
   memset(rx_ring, 0, sizeof(rx_ring));
   for (i = 0; i < RX_RING_SIZE; i++) {
-    rx_ring[i].addr = (uint64) kalloc();
-    if (!rx_ring[i].addr)
-      panic("e1000");
+    char *buf = kalloc();
+    if(!buf) panic("e1000_init: kalloc fault");
+    rx_membuf[i] = buf;
+    rx_ring[i].addr = (uint64) buf;
   }
   regs[E1000_RDBAL] = (uint64) rx_ring;
   if(sizeof(rx_ring) % 128 != 0)
@@ -93,32 +104,68 @@ e1000_init(uint32 *xregs)
 int
 e1000_transmit(char *buf, int len)
 {
-  //
-  // Your code here.
-  //
   // buf contains an ethernet frame; program it into
   // the TX descriptor ring so that the e1000 sends it. Stash
   // a pointer so that it can be freed after send completes.
-  //
-  // return 0 on success.
-  // return -1 on failure (e.g., there is no descriptor available)
-  // so that the caller knows to free buf.
-  //
+  acquire(&e1000_lock);
 
-  
+  uint32 tail = regs[E1000_TDT];
+
+  // 检查该tx_ing中元素空闲
+  if(!(tx_ring[tail].status & E1000_TXD_STAT_DD)){
+    release(&e1000_lock);
+    return -1;
+  }
+
+  if(tx_ring[tail].addr){
+    kfree((void *) tx_membuf[tail]);
+    // tx_ring[tail].status = 0; 
+  }
+
+  tx_ring[tail].addr = (uint64) buf;
+  tx_ring[tail].length = len;
+  tx_ring[tail].cmd = E1000_TXD_CMD_EOP | E1000_TXD_CMD_RS;
+
+  // 将指针记录进入跟踪数组
+  tx_membuf[tail] = buf;
+
+  // 更新硬件TDT
+  regs[E1000_TDT] = (tail + 1) % TX_RING_SIZE;
+
+  release(&e1000_lock);
   return 0;
 }
 
 static void
 e1000_recv(void)
 {
-  //
-  // Your code here.
-  //
   // Check for packets that have arrived from the e1000
   // Create and deliver a buf for each packet (using net_rx()).
-  //
+  acquire(&e1000_lock);
+  
+  // 遍历rx_ring
+  while(rx_ring[rdt_check].status & E1000_RXD_STAT_DD){
+    // 将其中的内存交给net_rx管理
+    char *buf = rx_membuf[rdt_check];
+    int len = rx_ring[rdt_check].length;
 
+    release(&e1000_lock);
+    net_rx(buf, len);
+    acquire(&e1000_lock);
+
+    // 申请新的内存
+    char *new_buf = kalloc();
+    if(!new_buf) panic("e1000_recv: kalloc failed");
+
+    rx_membuf[rdt_check] = new_buf;
+    rx_ring[rdt_check].addr = (uint64) new_buf;
+    rx_ring[rdt_check].status = 0;
+
+    regs[E1000_RDT] = rdt_check;
+
+    rdt_check = (rdt_check + 1) % RX_RING_SIZE;
+  }
+  release(&e1000_lock);
 }
 
 void
@@ -127,7 +174,9 @@ e1000_intr(void)
   // tell the e1000 we've seen this interrupt;
   // without this the e1000 won't raise any
   // further interrupts.
-  regs[E1000_ICR] = 0xffffffff;
+  uint32 icr = regs[E1000_ICR];
 
-  e1000_recv();
+  if (icr & E1000_ICR_RXT0) {
+    e1000_recv();
+  }
 }

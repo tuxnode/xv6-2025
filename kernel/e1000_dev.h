@@ -32,6 +32,8 @@
 #define E1000_TCTL_CT_SHIFT 4
 #define E1000_TCTL_COLD_SHIFT 12
 
+#define E1000_ICR_RXT0 0x80
+
 /* Receive Control */
 #define E1000_RCTL_EN             0x00000002    /* enable */
 #define E1000_RCTL_BAM            0x00008000    /* broadcast enable */
