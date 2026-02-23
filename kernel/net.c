@@ -10,6 +10,25 @@
 #include "file.h"
 #include "net.h"
 
+#define MAX_UDP_PKTS 16     // 每个端口最多缓存 16 个包
+#define MAX_UDP_SOCKETS 10  // 系统同时绑定的最大端口数
+
+struct sock {
+  uint16 port;
+  struct spinlock lock;
+  char *pkts[MAX_UDP_PKTS]; // 存储指针的数组
+  int head;                 // 存储头指针
+  int tail;                 // 存储尾指针
+};
+
+
+// 全局socket表
+struct {
+  struct spinlock lock;
+  struct sock socket[MAX_UDP_SOCKETS];
+} socktable;
+
+
 // xv6's ethernet and IP addresses
 static uint8 local_mac[ETHADDR_LEN] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };
 static uint32 local_ip = MAKE_IP_ADDR(10, 0, 2, 15);
@@ -25,6 +44,15 @@ void
 netinit(void)
 {
   initlock(&netlock, "netlock");
+
+  // 初始化socket表
+  initlock(&socktable.lock, "socktable lock");
+  for(int i = 0; i < MAX_UDP_SOCKETS; ++i){
+    initlock(&socktable.socket[i].lock, "sock lock");
+    socktable.socket[i].port = 0;
+    socktable.socket[i].head = 0;
+    socktable.socket[i].tail = 0;
+  }
 }
 
 
@@ -40,6 +68,19 @@ sys_bind(void)
   // Your code here.
   //
 
+  int port;
+  argint(0, &port);
+
+  acquire(&socktable.lock);
+  for(int i = 0;i < MAX_UDP_SOCKETS; ++i){
+    if(socktable.socket[i].port == 0){
+      socktable.socket[i].port = port;
+      release(&socktable.lock);
+      return 0;
+    }
+  }
+
+  release(&socktable.lock);
   return -1;
 }
 
@@ -54,7 +95,28 @@ sys_unbind(void)
   //
   // Optional: Your code here.
   //
+  int port;
+  argint(0, &port);
 
+  acquire(&socktable.lock);
+  for(int i = 0; i < MAX_UDP_SOCKETS; ++i){
+    if(socktable.socket[i].port == port){
+      acquire(&socktable.socket[i].lock);
+      socktable.socket[i].port = 0;
+
+      // 清空数组里还没读的包
+      while(socktable.socket[i].head != socktable.socket[i].tail){
+        kfree(socktable.socket[i].pkts[socktable.socket[i].head]);
+        socktable.socket[i].head = (socktable.socket[i].head + 1) % MAX_UDP_PKTS;
+        socktable.socket[i].head = 0;
+        socktable.socket[i].tail = 0;
+      }
+      release(&socktable.socket[i].lock);
+      break;
+    } 
+  }
+
+  release(&socktable.lock);
   return 0;
 }
 
@@ -76,9 +138,65 @@ sys_unbind(void)
 uint64
 sys_recv(void)
 {
-  //
   // Your code here.
-  //
+
+int dport, maxlen;
+  uint64 src_addr, sport_addr, buf_addr;
+
+  // 获取用户传入的 5 个参数
+  argint(0, &dport); argaddr(1, &src_addr);
+  argaddr(2, &sport_addr); argaddr(3, &buf_addr);
+  argint(4, &maxlen);
+
+  // 在全局表中找到匹配的 socket
+  struct sock *s = 0;
+  acquire(&socktable.lock);
+  for(int i = 0; i < MAX_UDP_SOCKETS; i++){
+    if(socktable.socket[i].port == dport){
+      s = &socktable.socket[i];
+      break;
+    }
+  }
+  release(&socktable.lock);
+
+  if(!s) return -1;
+
+  // 等待数据包
+  acquire(&s->lock);
+  while(s->head == s->tail){
+    sleep(s, &s->lock);
+  }
+
+  // 从数组head取出一个包
+  char *pkt = s->pkts[s->head];
+  s->head = (s->head + 1) % MAX_UDP_PKTS;
+  release(&s->lock);
+
+  // 4. 解析网络包，提取所需字段
+  struct eth *eth = (struct eth *)pkt;
+  struct ip *ip = (struct ip *)(eth + 1); // 跳过以eth header
+  int ip_head_len = (ip->ip_vhl & 0x0f) * 4;
+  struct udp *udp = (struct udp *)((char *)ip + ip_head_len); // 跳过ip header
+
+  uint32 src_ip = ntohl(ip->ip_src);    // 转为主机字节序
+  uint16 sport = ntohs(udp->sport);     // 转为主机字节序
+  int payload_len = ntohs(udp->ulen) - sizeof(struct udp);
+  char *payload = (char *)(udp + 1);
+
+  // 拷贝回用户空间
+  struct proc *p = myproc();
+  if(copyout(p->pagetable, src_addr, (char *)&src_ip, sizeof(src_ip)) < 0) goto err;
+  if(copyout(p->pagetable, sport_addr, (char *)&sport, sizeof(sport)) < 0) goto err;
+  
+  int copylen = (payload_len < maxlen) ? payload_len : maxlen;
+  if(copyout(p->pagetable, buf_addr, payload, copylen) < 0) goto err;
+
+  // 清理内存
+  kfree(pkt);
+  return copylen;
+
+err:
+  kfree(pkt);
   return -1;
 }
 
@@ -189,11 +307,55 @@ ip_rx(char *buf, int len)
   if(seen_ip == 0)
     printf("ip_rx: received an IP packet\n");
   seen_ip = 1;
-
-  //
   // Your code here.
-  //
-  
+  struct eth *eth = (struct eth *) buf;
+  struct ip *inip = (struct ip *) (eth + 1);
+
+  // 判断是否是正确的ipv4 package
+  if((inip->ip_vhl >> 4) != 4){
+    panic("ip_rx: ip_version fault");
+    kfree((void *) buf);
+    return;
+  }
+
+  // 判断上游协议
+  if(inip->ip_p == IPPROTO_TCP){
+    kfree((void *) buf);
+    return;
+  }
+
+  if(inip->ip_p == IPPROTO_UDP){
+    int ip_head_len = (inip->ip_vhl & 0x0f) * 4;
+    struct udp *udp_header = (struct udp *) ((char *)inip + ip_head_len);
+    uint16 dport = ntohs(udp_header->dport);
+
+    // 检查是否有已经绑定的端口
+    for(int i = 0; i < MAX_UDP_SOCKETS; ++i){
+      struct sock *s = &socktable.socket[i];
+
+      acquire(&s->lock);
+      // 匹配到端口
+      if(s->port == dport){
+        // 检查数组是否已满
+        int next_tail = (s->tail + 1) % MAX_UDP_PKTS;
+        if(next_tail != s->head){
+          // 将指针传入数组
+          s->pkts[s->tail] = buf;
+          s->tail = next_tail;
+
+          // 唤醒进程
+          wakeup(s);
+          release(&s->lock);
+          return;
+        }
+        // 数组满了要释放
+        release(&s->lock);
+        break;
+      }
+      release(&s->lock);
+    }
+  }
+  kfree((void *) buf);
 }
 
 //
