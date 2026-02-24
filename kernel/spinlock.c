@@ -125,28 +125,49 @@ static void
 read_acquire_inner(struct rwspinlock *rwlk)
 {
   // Replace this with your implementation.
-  acquire(&rwlk->l);
+  for(;;){
+    while(rwlk->is_write || rwlk->pending_writers);
+
+    __sync_fetch_and_add(&rwlk->readers, 1); // 原子操作加一
+
+    if(rwlk->is_write)
+      __sync_fetch_and_sub(&rwlk->readers, 1);
+    else {
+      __sync_synchronize();
+      break;
+    }
+  }
 }
 
 static void
 read_release_inner(struct rwspinlock *rwlk)
 {
-  // Replace this with your implementation.
-  release(&rwlk->l);
+  __sync_synchronize();
+  __sync_fetch_and_sub(&rwlk->readers, 1);
 }
 
 static void
 write_acquire_inner(struct rwspinlock *rwlk)
 {
-  // Replace this with your implementation.
-  acquire(&rwlk->l);
+  __sync_fetch_and_add(&rwlk->pending_writers, 1);
+
+  for(;;){
+    // 设置状态
+    if(__sync_val_compare_and_swap(&rwlk->is_write, 0, 1) == 0){
+      while(rwlk->readers > 0);
+
+      __sync_synchronize();
+      __sync_fetch_and_sub(&rwlk->pending_writers, 1);
+      break;
+    }
+  }
 }
 
 static void
 write_release_inner(struct rwspinlock *rwlk)
 {
-  // Replace this with your implementation.
-  release(&rwlk->l);
+  __sync_synchronize();
+  __sync_lock_release(&rwlk->is_write);
 }
 
 void
@@ -180,8 +201,10 @@ write_release(struct rwspinlock *rwlk)
 void
 initrwlock(struct rwspinlock *rwlk)
 {
-  // Replace this with your implementation.
   initlock(&rwlk->l, "rwlk");
+  rwlk->is_write = 0;
+  rwlk->readers = 0;
+  rwlk->pending_writers = 0;
 }
 
 // Test rwspinlock implementation.
