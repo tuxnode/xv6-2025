@@ -126,7 +126,8 @@ read_acquire_inner(struct rwspinlock *rwlk)
 {
   // Replace this with your implementation.
   for(;;){
-    while(rwlk->is_write || rwlk->pending_writers);
+    while(rwlk->is_write || rwlk->pending_writers)
+      __sync_synchronize();
 
     __sync_fetch_and_add(&rwlk->readers, 1); // 原子操作加一
 
@@ -151,16 +152,14 @@ write_acquire_inner(struct rwspinlock *rwlk)
 {
   __sync_fetch_and_add(&rwlk->pending_writers, 1);
 
-  for(;;){
-    // 设置状态
-    if(__sync_val_compare_and_swap(&rwlk->is_write, 0, 1) == 0){
-      while(rwlk->readers > 0);
+  
+  while(__sync_val_compare_and_swap(&rwlk->is_write, 0, 1) != 0)
+    __sync_synchronize();
+  while(rwlk->readers > 0)
+    __sync_synchronize();
 
-      __sync_synchronize();
-      __sync_fetch_and_sub(&rwlk->pending_writers, 1);
-      break;
-    }
-  }
+  __sync_fetch_and_sub(&rwlk->pending_writers, 1);
+  __sync_synchronize();
 }
 
 static void
