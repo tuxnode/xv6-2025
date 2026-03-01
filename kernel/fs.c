@@ -20,6 +20,7 @@
 #include "fs.h"
 #include "buf.h"
 #include "file.h"
+#include <math.h>
 
 #define min(a, b) ((a) < (b) ? (a) : (b))
 // there should be one superblock per disk device, but we run with
@@ -71,9 +72,9 @@ balloc(uint dev)
 
   bp = 0;
   for(b = 0; b < sb.size; b += BPB){
-    bp = bread(dev, BBLOCK(b, sb));
+    bp = bread(dev, BBLOCK(b, sb));  // 获取复制到内存中的block pointer
     for(bi = 0; bi < BPB && b + bi < sb.size; bi++){
-      m = 1 << (bi % 8);
+      m = 1 << (bi % 8);  // 计算掩码
       if((bp->data[bi/8] & m) == 0){  // Is block free?
         bp->data[bi/8] |= m;  // Mark block in use.
         log_write(bp);
@@ -406,7 +407,7 @@ static uint
 bmap(struct inode *ip, uint bn)
 {
   uint addr, *a;
-  struct buf *bp;
+  struct buf *bp, *bp2;
 
   if(bn < NDIRECT){
     if((addr = ip->addrs[bn]) == 0){
@@ -440,6 +441,43 @@ bmap(struct inode *ip, uint bn)
     return addr;
   }
 
+  bn -= NINDIRECT;
+
+  if(bn < MAXFILE){
+    if((addr = ip->addrs[NDIRECT + 1]) == 0){
+      addr = balloc(ip->dev);
+      if(addr == 0) return 0;
+      ip->addrs[NDIRECT + 1] = addr;
+    }
+    bp = bread(ip->dev, addr);
+    a = (uint *) bp->data;
+    
+    uint idx = bn / NINDIRECT;
+    uint idx_inner = bn % NINDIRECT;
+
+    if((addr = a[idx]) == 0){
+      addr = balloc(ip->dev);
+      if(addr == 0){
+        brelse(bp);
+        return 0;
+      }
+      a[idx] = addr;
+      log_write(bp);
+    }
+    bp2 = bread(ip->dev, addr);
+    a = (uint *) bp2->data;
+    if((addr = a[idx_inner]) == 0){
+      addr = balloc(ip->dev);
+      if(addr){
+        a[idx_inner] = addr;
+        log_write(bp2);
+      }
+    }
+    brelse(bp2);
+    brelse(bp);
+    return addr;
+  }
+
   panic("bmap: out of range");
 }
 
@@ -448,7 +486,7 @@ bmap(struct inode *ip, uint bn)
 void
 itrunc(struct inode *ip)
 {
-  int i, j;
+  int i, j, k;
   struct buf *bp;
   uint *a;
 
@@ -469,6 +507,28 @@ itrunc(struct inode *ip)
     brelse(bp);
     bfree(ip->dev, ip->addrs[NDIRECT]);
     ip->addrs[NDIRECT] = 0;
+  }
+
+
+  if(ip->addrs[NDIRECT + 1]){
+    bp = bread(ip->dev, ip->addrs[NDIRECT + 1]);
+    a = (uint *) bp->data;
+
+    for(k = 0; k < NINDIRECT; k++){
+      if(a[k] == 0) continue;
+      struct buf *bp_t = bread(ip->dev, a[k]);
+      uint *inner = (uint *) bp_t->data;
+      for(int t = 0; t < NINDIRECT; t++){
+        if(inner[t])
+          bfree(ip->dev, inner[t]);
+      }
+      brelse(bp_t);
+      bfree(ip->dev, a[k]);
+      a[k] = 0;
+    }
+    brelse(bp);
+    bfree(ip->dev, ip->addrs[NDIRECT + 1]);
+    ip->addrs[NDIRECT + 1] = 0;
   }
 
   ip->size = 0;
