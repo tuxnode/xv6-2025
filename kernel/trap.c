@@ -5,6 +5,7 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "fcntl.h"
 
 struct spinlock tickslock;
 uint ticks;
@@ -29,6 +30,8 @@ trapinithart(void)
   w_stvec((uint64)kernelvec);
 }
 
+
+extern int mmap_pagefault(struct vma *, pagetable_t, uint64);
 //
 // handle an interrupt, exception, or system call from user space.
 // called from, and returns to, trampoline.S
@@ -68,8 +71,29 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
-  } else if((r_scause() == 15 || r_scause() == 13) &&
-            vmfault(p->pagetable, r_stval(), (r_scause() == 13)? 1 : 0) != 0) {
+  } else if((r_scause() == 15 || r_scause() == 13)){
+    uint64 addr = r_stval();
+    struct vma *v = 0;
+    // 定位地址
+    for(int i = 0; i < NVMA; i++){
+      // 检查地址是否有效
+      if(p->vmas[i].valid && addr >= p->vmas[i].addr && addr < p->vmas[i].addr + p->vmas[i].length){
+        v = &p->vmas[i];
+        break;
+      }
+    }
+    // 确定是mmap缺页
+    if(v != 0){
+      if(r_scause() == 15 && !(v->prot & PROT_WRITE)){
+        p->killed = 1;
+      }
+      else if(mmap_pagefault(v, p->pagetable, addr) < 0){
+        p->killed = 1;
+      }
+    }
+    else{
+      if(vmfault(p->pagetable, r_stval(), (r_scause() == 13)? 1 : 0) == (uint64) -1) { p->killed = 1; }
+    }
     // page fault on lazily-allocated page
   } else {
     printf("usertrap(): unexpected scause 0x%lx pid=%d\n", r_scause(), p->pid);

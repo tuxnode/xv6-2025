@@ -503,3 +503,129 @@ sys_pipe(void)
   }
   return 0;
 }
+
+uint64
+sys_mmap(void)
+{
+  uint64 addr;
+  int len, prot, flags, fd, offset;
+  struct file *f;
+  struct proc *p = myproc();
+
+  argaddr(0, &addr);
+  argint(1, &len);
+  argint(2, &prot);
+  argint(3, &flags);
+  argfd(4, &fd, &f);
+  argint(5, &offset);
+
+  // 检查权限
+  if(!f->writable && (flags & MAP_SHARED) && (prot & PROT_WRITE))
+    return -1;
+
+  // 在vmas数组中找一个空位
+  struct vma *v = 0;
+  for(int i = 0; i < NVMA; i++){
+    if(p->vmas[i].valid == 0){
+      v = &p->vmas[i];
+      break;
+    }
+  }
+
+  if(v == 0) return -1;
+
+  // 开始分配地址
+  v->addr = PGROUNDUP(p->sz);  // 需要对齐
+  v->valid = 1;
+  v->length = len;
+  v->flags = flags;
+  v->offset = offset;
+  v->f = f;
+  v->prot = prot;
+  v->filesize = f->ip->size;
+  v->orig_addr = v->addr;
+
+  // 增加文件引用计数
+  filedup(f);
+  if(p->mmap_base == 0){
+    p->mmap_base = v->addr;
+  }
+
+  p->sz = v->addr + PGROUNDUP(len);
+
+  return v->addr;
+}
+
+uint64
+sys_munmap(void)
+{
+  uint64 addr;
+  int len;
+  struct proc *p = myproc();
+  struct vma *v = 0;
+
+  argaddr(0, &addr);
+  argint(1, &len);
+
+  // 都需要对参数进行取整
+  addr = PGROUNDDOWN(addr);
+  len = PGROUNDUP(len);
+
+  // 查找vma
+  for(int i = 0; i < NVMA; i++){
+    if(p->vmas[i].valid && addr >= p->vmas[i].addr && addr < p->vmas[i].addr + p->vmas[i].length){
+      v = &p->vmas[i];
+      break;
+    }
+  }
+
+  if(v == 0) return -1;
+
+  // 写回逻辑
+  if(v->flags & MAP_SHARED){
+    // 遍历每一页
+    for(uint64 a = addr; a < addr + len; a += PGSIZE){
+      pte_t *pte = walk(p->pagetable, a, 0);
+      // 确认需要已经分配且被修改过
+      if(pte && (*pte & PTE_V)){
+        int file_offset = v->offset + (a - v->orig_addr);
+        if(file_offset >= v->filesize) continue;
+        int write_len = PGSIZE;
+        if(file_offset + write_len > (int)v->filesize) write_len = v->filesize - file_offset;
+        v->f->off = file_offset;
+        // 写回到磁盘
+        filewrite(v->f, a, write_len);
+      }
+    }
+  }
+  // 解除映射并释放pa
+  // uvmunmap(p->pagetable, addr, len / PGSIZE, 1);
+  for(uint64 a = addr; a < addr + len; a += PGSIZE){
+    pte_t *pte = walk(p->pagetable, a, 0);
+    if(pte && (*pte & PTE_V)){
+        kfree((void*)PTE2PA(*pte));
+        *pte = 0;
+    }
+  }
+
+  sfence_vma(); // 刷新tlb
+  
+  // 更新vma
+  if(addr == v->addr && len == v->length){
+    // 完全解除映射
+    v->valid = 0;
+    fileclose(v->f);
+    if(v->addr + PGROUNDUP(v->length) == p->sz) p->sz = v->addr;
+  }else if(addr == v->addr){
+    // 从头部解除
+    v->addr += len;
+    v->length -= len;
+  }else{
+    if(addr + len == p->sz){
+      p->sz = addr;
+    }
+    v->length -= len;
+  }
+
+  return 0;
+}

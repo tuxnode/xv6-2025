@@ -70,3 +70,7 @@ void printf(const char*, ...) __attribute__ ((format (printf, 1, 2)));
 // umalloc.c
 void* malloc(uint);
 void free(void*);
+
+// mmap Lab
+void *mmap(void *addr, int len, int prot, int flags, int fd, int offset);
+int munmap(void *addr, int len);

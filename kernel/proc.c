@@ -3,8 +3,12 @@
 #include "memlayout.h"
 #include "riscv.h"
 #include "spinlock.h"
+#include "sleeplock.h"
 #include "proc.h"
 #include "defs.h"
+#include "fcntl.h"
+#include "fs.h"
+#include "file.h"
 
 struct cpu cpus[NCPU];
 
@@ -279,6 +283,15 @@ kfork(void)
   // Cause fork to return 0 in the child.
   np->trapframe->a0 = 0;
 
+  // copy vma
+  for(int i = 0; i < NVMA; i++){
+    if(p->vmas[i].valid){
+      np->vmas[i] = p->vmas[i];
+      filedup(p->vmas[i].f);
+    }
+  }
+  np->mmap_base = p->mmap_base;
+
   // increment reference counts on open file descriptors.
   for(i = 0; i < NOFILE; i++)
     if(p->ofile[i])
@@ -328,6 +341,31 @@ kexit(int status)
   if(p == initproc)
     panic("init exiting");
 
+  // clean vma
+  for(int i = 0; i < NVMA; i++){
+    if(p->vmas[i].valid){
+      struct vma *v = &p->vmas[i];
+      // 共享映射则返回脏页
+        for(uint64 va = v->addr; va < v->addr + v->length; va += PGSIZE){
+          pte_t *pte = walk(p->pagetable, va, 0);
+          if(pte && (*pte & PTE_V)){
+            // 仅仅在共享页的时候写回
+            if(v->flags & MAP_SHARED){
+              v->f->off = v->offset + (va - v->addr);
+              if(v->f->off >= v->filesize) continue;
+              int write_len = PGSIZE;
+              if(v->f->off + write_len > (int)v->filesize) write_len = v->filesize - v->f->off;
+              filewrite(v->f, va, write_len);
+            }
+            kfree((void *) PTE2PA(*pte));
+            *pte = 0;
+          }
+        }
+        fileclose(v->f);
+        v->valid = 0;
+    }
+  }
+
   // Close all open files.
   for(int fd = 0; fd < NOFILE; fd++){
     if(p->ofile[fd]){
@@ -336,6 +374,7 @@ kexit(int status)
       p->ofile[fd] = 0;
     }
   }
+
 
   begin_op();
   iput(p->cwd);
@@ -684,4 +723,38 @@ procdump(void)
     printf("%d %s %s", p->pid, state, p->name);
     printf("\n");
   }
+}
+
+int
+mmap_pagefault(struct vma *v,pagetable_t pagetable, uint64 va)
+{
+  va = PGROUNDDOWN(va);
+
+  void *mem = kalloc();
+  if(mem == 0) return -1;
+  memset(mem, 0, PGSIZE);
+
+  uint offset = v->offset + (va - v->addr);
+
+  ilock(v->f->ip);
+  int n = readi(v->f->ip, 0, (uint64)mem, offset, PGSIZE);
+  iunlock(v->f->ip);
+
+  if(n < 0){
+    kfree(mem);
+    return -1;
+  }
+
+  // 设置PTE权限
+  int flags = PTE_U;
+  if(v->prot & PROT_READ)  flags |= PTE_R;
+  if(v->prot & PROT_WRITE)  flags |= PTE_W;
+  if(v->prot & PROT_EXEC)  flags |= PTE_X;
+
+  if(mappages(pagetable, va, PGSIZE, (uint64) mem, flags) != 0){
+    kfree(mem);
+    return -1;
+  }
+
+  return 0;
 }
