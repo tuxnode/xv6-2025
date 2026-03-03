@@ -352,9 +352,12 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
   
     pa0 = walkaddr(pagetable, va0);
     if(pa0 == 0) {
-      if((pa0 = vmfault(pagetable, va0, 0)) == 0) {
-        return -1;
-      }
+      // if((pa0 = vmfault(pagetable, va0, 0)) == 0) {
+        // return -1;
+      // }
+      uint64 result = vmfault(pagetable, va0, 0);
+      if(result == 0 || result == (uint64) -1) return -1;
+      va0 = result;
     }
 
     pte = walk(pagetable, va0, 0);
@@ -386,9 +389,12 @@ copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
     va0 = PGROUNDDOWN(srcva);
     pa0 = walkaddr(pagetable, va0);
     if(pa0 == 0) {
-      if((pa0 = vmfault(pagetable, va0, 0)) == 0) {
-        return -1;
-      }
+      // if((pa0 = vmfault(pagetable, va0, 0)) == 0) {
+        // return -1;
+      // }
+      uint64 result = vmfault(pagetable, va0, 0);
+      if(result == 0 || result == (uint64)-1) return -1;
+      pa0 = result;
     }
     n = PGSIZE - (srcva - va0);
     if(n > len)
